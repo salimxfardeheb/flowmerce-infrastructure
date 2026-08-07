@@ -1,0 +1,111 @@
+# ═══════════════════════════════════════════════════════════════
+#  Flowmerce — Orchestration des services applicatifs
+#
+#  Ce fichier ne contient AUCUN secret : toutes les valeurs sont
+#  interpolées depuis le fichier .env local (voir .env.example).
+#
+#  Les Dockerfiles vivent dans leurs repositories respectifs ;
+#  ce repository ne fait qu'orchestrer.
+#
+#  PostgreSQL est hors périmètre : la base est fournie par un
+#  service externe via DATABASE_URL / DIRECT_URL.
+# ═══════════════════════════════════════════════════════════════
+
+name: flowmerce
+
+services:
+
+  # ─────────────────────────────────────────────────────────────
+  #  ml — API Machine Learning (FastAPI + uvicorn)
+  #  Joignable par le service `web` sur http://ml:8000
+  # ─────────────────────────────────────────────────────────────
+  ml:
+    build:
+      context: ../Flowmerce-ML
+      dockerfile: Dockerfile
+    image: flowmerce-ml:local
+    container_name: flowmerce-ml
+
+    environment:
+      # Clé partagée avec le service web (header X-Internal-Key).
+      # Une seule variable côté .env pour éviter toute désynchronisation.
+      INTERNAL_API_KEY: ${ML_INTERNAL_SECRET:?ML_INTERNAL_SECRET est requis — voir .env.example}
+
+      # Artefacts ML chargés depuis le Hub Hugging Face au démarrage
+      # (config.py : USE_HF_MODELS = True).
+      HF_REPO_ID:      ${HF_REPO_ID:?HF_REPO_ID est requis — voir .env.example}
+      HF_TOKEN:        ${HF_TOKEN:-}
+      HF_DATASET_REPO: ${HF_DATASET_REPO:-}
+      HF_DATASET_FILE: ${HF_DATASET_FILE:-}
+
+    # Bindé sur la loopback uniquement : le service n'a pas besoin d'être
+    # joignable depuis l'extérieur de la machine, `web` passe par le réseau
+    # Docker. Utile en local pour consulter http://localhost:8000/docs.
+    ports:
+      - "127.0.0.1:${ML_PORT:-8000}:8000"
+
+    # /save_claim écrit les réclamations réelles dans data/raw :
+    # un volume nommé les préserve entre deux `docker compose down`.
+    volumes:
+      - ml_data:/app/data/raw
+
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────
+  #  web — Application Next.js (mode production, output standalone)
+  # ─────────────────────────────────────────────────────────────
+  web:
+    build:
+      context: ../flowmerce-web-app
+      dockerfile: Dockerfile
+      args:
+        # Inlinée dans le bundle client au build : doit être connue ici.
+        NEXT_PUBLIC_BASE_URL: ${NEXT_PUBLIC_BASE_URL:-http://localhost:3000}
+    image: flowmerce-web:local
+    container_name: flowmerce-web
+
+    environment:
+      # ── Communication interne : nom de service Docker, jamais localhost ──
+      ML_API_URL:         ${ML_API_URL:-http://ml:8000}
+      ML_INTERNAL_SECRET: ${ML_INTERNAL_SECRET:?ML_INTERNAL_SECRET est requis — voir .env.example}
+
+      # ── Base de données externe (hors périmètre Docker) ──
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL est requis — voir .env.example}
+      DIRECT_URL:   ${DIRECT_URL:?DIRECT_URL est requis — voir .env.example}
+
+      # ── Authentification ──
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?NEXTAUTH_SECRET est requis — voir .env.example}
+      AUTH_SECRET:     ${AUTH_SECRET:?AUTH_SECRET est requis — voir .env.example}
+
+      # ── Supabase (stockage / service role) ──
+      SUPABASE_URL:              ${SUPABASE_URL:?SUPABASE_URL est requis — voir .env.example}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:?SUPABASE_SERVICE_ROLE_KEY est requis — voir .env.example}
+
+      # ── Tâches planifiées ──
+      CRON_SECRET: ${CRON_SECRET:?CRON_SECRET est requis — voir .env.example}
+
+      # ── Envoi d'e-mails ──
+      GMAIL_USER:         ${GMAIL_USER:?GMAIL_USER est requis — voir .env.example}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:?GMAIL_APP_PASSWORD est requis — voir .env.example}
+
+      # ── URL publique (également requise au runtime) ──
+      NEXT_PUBLIC_BASE_URL: ${NEXT_PUBLIC_BASE_URL:-http://localhost:3000}
+
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+
+    # L'API ML charge ses artefacts au démarrage : on attend qu'elle soit
+    # réellement saine, pas seulement démarrée.
+    depends_on:
+      ml:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+# ═══════════════════════════════════════════════════════════════
+#  Les deux services partagent le réseau `default` créé par Compose.
+#  Ils se résolvent mutuellement par leur nom de service : `ml`, `web`.
+# ═══════════════════════════════════════════════════════════════
+
+volumes:
+  ml_data:
