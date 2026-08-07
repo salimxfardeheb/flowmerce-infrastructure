@@ -12,7 +12,7 @@ repository ne fait que les assembler.
 ## 1. Rôle du repository
 
 | Repository | Responsabilité | Contenu Docker |
-|---|---|---|
+| --- | --- | --- |
 | `flowmerce-infrastructure` | Orchestration, réseau, variables d'environnement | `docker-compose.yml` |
 | `flowmerce-web-app` | Application Next.js | `Dockerfile`, `.dockerignore` |
 | `Flowmerce-ML` | API de prédiction (FastAPI) | `Dockerfile`, `.dockerignore` |
@@ -142,6 +142,9 @@ Points d'attention :
   ne peuvent pas se désynchroniser.
 - **`NEXT_PUBLIC_BASE_URL`** est *inlinée dans le bundle client au moment du
   build*. Après l'avoir changée, il faut reconstruire : `docker compose build web`.
+- **`AUTH_TRUST_HOST` et `AUTH_URL`** sont spécifiques à l'exécution en
+  conteneur — voir la section 13 ci-dessous. Les laisser aux valeurs par défaut
+  convient en local.
 - **`.env` est ignoré par Git.** Ne committez jamais de secret réel ; seul
   `.env.example` est versionné.
 
@@ -191,7 +194,7 @@ docker compose up -d --build
 Une fois démarré :
 
 | Service | URL |
-|---|---|
+| --- | --- |
 | Application Next.js | <http://localhost:3000> |
 | API ML | <http://localhost:8000> |
 | Documentation OpenAPI de l'API ML | <http://localhost:8000/docs> |
@@ -326,3 +329,48 @@ docker compose exec web node -e "fetch('http://ml:8000/health').then(r=>r.text()
 
 Le port `8000` n'a pas besoin d'être publié pour que `web` joigne `ml` : il ne
 l'est, sur la loopback, que pour votre confort en développement local.
+
+---
+
+## 13. Authentification en conteneur
+
+Deux variables du service `web` n'existent que parce que l'application tourne
+en conteneur. Elles sont préremplies dans `.env.example` et ne demandent aucune
+modification du code applicatif.
+
+### `AUTH_TRUST_HOST=true`
+
+En `NODE_ENV=production`, Auth.js v5 rejette toute requête dont l'hôte n'est pas
+déclaré de confiance :
+
+```text
+[auth][error] UntrustedHost: Host must be trusted. URL was: http://localhost:3000/api/auth/session
+```
+
+Auth.js reconnaît Vercel automatiquement (`VERCEL=1`) et fait confiance par
+défaut hors production — d'où l'absence du problème en développement et sur
+Vercel. Dans un conteneur, ni l'un ni l'autre : il faut le lui dire.
+
+### `AUTH_URL`
+
+Le serveur Next.js `standalone` doit écouter sur `HOSTNAME=0.0.0.0` pour être
+joignable depuis l'extérieur du conteneur. Sans origine canonique, Auth.js
+déduit ses redirections de ce hostname et renvoie l'utilisateur vers
+`http://0.0.0.0:3000/…`, une adresse qu'aucun navigateur ne peut ouvrir.
+
+`AUTH_URL` fixe l'origine réelle du site. Laissée vide, elle reprend
+`NEXT_PUBLIC_BASE_URL`. En production, la renseigner avec le domaine public.
+
+### Vérifier
+
+```bash
+docker compose logs web | grep -i untrustedhost   # doit ne rien renvoyer
+curl -sL -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/auth/session
+```
+
+Les redirections d'Auth.js doivent pointer vers votre domaine, jamais vers
+`0.0.0.0` :
+
+```bash
+curl -s -D - -o /dev/null http://localhost:3000/api/auth/signin/ | grep -i location
+```

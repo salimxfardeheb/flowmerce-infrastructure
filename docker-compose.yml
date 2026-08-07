@@ -77,6 +77,17 @@ services:
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?NEXTAUTH_SECRET est requis — voir .env.example}
       AUTH_SECRET:     ${AUTH_SECRET:?AUTH_SECRET est requis — voir .env.example}
 
+      # Auth.js v5 refuse par défaut tout hôte non reconnu en production
+      # (erreur UntrustedHost). Il détecte automatiquement Vercel, mais pas
+      # un conteneur : l'hôte doit donc être déclaré de confiance ici.
+      AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
+
+      # Origine canonique utilisée par Auth.js pour bâtir ses redirections.
+      # Sans elle, Auth.js déduit l'origine du HOSTNAME du serveur Next
+      # standalone — soit 0.0.0.0 dans un conteneur — et renvoie l'utilisateur
+      # vers http://0.0.0.0:3000/… , injoignable depuis un navigateur.
+      AUTH_URL: ${AUTH_URL:-${NEXT_PUBLIC_BASE_URL:-http://localhost:3000}}
+
       # ── Supabase (stockage / service role) ──
       SUPABASE_URL:              ${SUPABASE_URL:?SUPABASE_URL est requis — voir .env.example}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:?SUPABASE_SERVICE_ROLE_KEY est requis — voir .env.example}
