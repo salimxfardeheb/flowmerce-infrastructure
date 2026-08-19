@@ -87,6 +87,8 @@ sont donc pas affectés.
 - **Build** : multi-stage `builder → runtime` sur `python:3.11-slim`,
   exécution en utilisateur non-root (`appuser`)
 - **Healthcheck** : endpoint `/health` existant de l'API, toutes les 30 s
+- **Endpoints** : `/` et `/health` publics ; `/predict`, `/save_claim` et
+  `/feature-contract` protégés par `X-Internal-Key` (API v5.0.0)
 
 Les artefacts ML (modèle, encodeur, scaler…) sont téléchargés depuis Hugging
 Face au démarrage — `HF_REPO_ID` est donc **obligatoire**. Une copie locale est
@@ -319,7 +321,38 @@ et **jamais** `http://localhost:8000` : à l'intérieur du conteneur `web`,
 sur la loopback de l'hôte, un chemin différent de la communication interne.
 
 Les appels de `web` vers `ml` portent l'en-tête `X-Internal-Key`, que l'API ML
-compare à son `INTERNAL_API_KEY` ; une clé absente ou incorrecte renvoie `403`.
+compare à son `INTERNAL_API_KEY` (comparaison à temps constant). L'API est
+**fail-closed**, et distingue trois échecs :
+
+| Situation | Réponse de `ml` |
+|---|---|
+| `INTERNAL_API_KEY` non configuré | `503` — et le conteneur refuse de démarrer |
+| En-tête absent ou vide | `401` |
+| En-tête erroné | `403` |
+
+### Contrat de features — en-tête `X-Feature-Contract-Version`
+
+Depuis l'API ML **v5**, `web` envoie aussi l'en-tête `X-Feature-Contract-Version`
+sur chaque `/predict`. `ml` la compare à la version du contrat qu'il sert
+(`contracts/feature_contract.json`, empreinte du contenu) et répond **409** si
+les deux vocabulaires diffèrent — une prédiction faite sur un vocabulaire périmé
+est ainsi refusée au lieu d'être servie silencieusement.
+
+Les deux conteneurs sont construits depuis les dépôts voisins : après un
+réentraînement du modèle, il faut donc recopier le contrat côté web **avant** de
+reconstruire les images, sans quoi tous les `/predict` répondront `409` :
+
+```bash
+cp ../Flowmerce-ML/contracts/feature_contract.json \
+   ../flowmerce-web-app/lib/ml/feature-contract.json
+docker compose build
+```
+
+Vérifier le contrat servi par le conteneur ML :
+
+```bash
+curl -H "X-Internal-Key: $ML_INTERNAL_SECRET" http://localhost:8000/feature-contract
+```
 
 Vérifier la communication interne de bout en bout :
 
@@ -374,3 +407,11 @@ Les redirections d'Auth.js doivent pointer vers votre domaine, jamais vers
 ```bash
 curl -s -D - -o /dev/null http://localhost:3000/api/auth/signin/ | grep -i location
 ```
+
+---
+
+## 14. Sécurité
+
+Le détail des mécanismes de sécurité des trois dépôts — authentification,
+cloisonnement, limitation de débit, durcissement des conteneurs et limites
+connues — est rassemblé dans [`../SECURITE.md`](../SECURITE.md).
